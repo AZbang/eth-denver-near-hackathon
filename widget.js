@@ -10,7 +10,6 @@ const NEW_SCRIPT = {
   balance: "0",
 };
 
-
 const exampleScript = `const data = get_Input();
 
 const followers = get_SignerFollowers()
@@ -111,20 +110,26 @@ State.init({
 });
 
 const loadScripts = () => {
+  console.log("loadScripts");
   const keys = Near.view(CONTRACT, "get_keys") ?? [];
   const mykeys = keys.filter((key) => key.split(":")[0] === context.accountId);
-  const scripts = Near.view(CONTRACT, "get_scripts", { keys: mykeys }) ?? [];
-  State.update({
-    scripts: scripts.map((script, i) => ({ ...script, sid: mykeys[i] })),
-  });
+  let scripts = Near.view(CONTRACT, "get_scripts", { keys: mykeys }) ?? [];
+  scripts = scripts.map((script, i) => ({ ...script, sid: mykeys[i] }));
+  State.update({ scripts });
 };
+
+// Where something like useEffect???
+loadScripts();
 
 const openScript = (script) => {
   State.update({
     script: {
       ...script,
       conditions: JSON.parse(script.conditions),
-      code: Storage.get(`${script.sid}:code`) || script.code || exampleScript,
+      code:
+        script.sid === "new"
+          ? Storage.get(`${script.sid}:code`) || exampleScript
+          : script.code,
     },
   });
 };
@@ -133,22 +138,26 @@ const deployScript = (script) => {
   const isNew = script.sid === "new";
   const newSid = context.accountId + ":" + Math.floor(Date.now() / 1000);
 
-  Storage.set("new:code", "");
-  State.update({ modal: null });
   Near.call(
     CONTRACT,
     isNew ? "add_script" : "edit_script",
     {
       sid: isNew ? newSid : script.sid,
-      code: Storage.get(`${script.sid}:code`, e.data) ?? script.code ?? "",
-      conditions: JSON.stringify(script.conditions),
       name: isNew ? script.name : undefined,
+      code: Storage.get(`${script.sid}:code`) || script.code || "",
+      conditions: JSON.stringify(script.conditions),
     },
     50 * TGAS,
     parseAmount(script.balance)
   );
 
-  loadScripts();
+  Storage.set(`${script.sid}:code`, "");
+  if (isNew) State.update({ script: { ...script, sid: newSid } });
+  State.update({ modal: null });
+};
+
+const testTrigger = (script) => {
+  Near.call(CONTRACT, "trigger_bot", { sid: script.sid }, 30 * TGAS);
 };
 
 const addDeposit = (script) => {
@@ -164,8 +173,6 @@ const addDeposit = (script) => {
 const removeScript = (script) => {
   Near.call(CONTRACT, "remove", { sid: script.sid }, 20 * TGAS, "1");
 };
-
-loadScripts();
 
 if (state.script == null) {
   return (
@@ -386,12 +393,20 @@ const render = () => (
       )}
 
       {state.script.sid !== "new" && (
-        <button
-          class="btn btn-light font-monospace"
-          onClick={() => State.update({ modal: MODAL_UPDATE })}
-        >
-          <i class="bi bi-box-fill" /> Update
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            class="btn btn-success font-monospace"
+            onClick={() => testTrigger(state.script)}
+          >
+            <i class="bi bi-play-fill" /> Test trigger
+          </button>
+          <button
+            class="btn btn-light font-monospace"
+            onClick={() => State.update({ modal: MODAL_UPDATE })}
+          >
+            <i class="bi bi-box-fill" /> Update
+          </button>
+        </div>
       )}
     </Header>
 
@@ -401,7 +416,7 @@ const render = () => (
     <iframe
       srcDoc={code}
       style={{ width: "100%", height: "calc(100% - 260px)" }}
-      message={state.script.code ?? ""}
+      message={JSON.stringify({ code: state.script.code ?? "" })}
       onMessage={(e) => {
         Storage.set(`${state.script.sid}:code`, e);
       }}
@@ -617,9 +632,14 @@ require(["vs/editor/editor.main"], async function () {
       parent.postMessage(editor.getModel().getValue(), "*")
     })
 
+    let isUsed = false
     window.addEventListener("message", (e) => {
-      editor.getModel().setValue(e.data)
-    }, { once: true })
+        if (isUsed) return;
+        try {
+            editor.getModel().setValue(JSON.parse(e.data).code)
+            isUsed = true
+        } catch {}
+    })
 });
 </script>
 `;
